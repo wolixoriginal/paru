@@ -33,6 +33,9 @@ pub fn help() {
     printtr!("       --pkgbuilds         Assume targets are from pkgbuild repositories");
     printtr!("    -a --aur               Assume targets are from the AUR");
     printtr!("    --mode      <mode>     Sets where paru looks for targets");
+    printtr!(
+        "    --interactive          Enable interactive package selection for -S, -R, -Ss and -Qs"
+    );
     printtr!("    --aururl    <url>      Set an alternative AUR URL");
     printtr!("    --aurrpcur  <url>      Set an alternative URL for the AUR /rpc endpoint");
     printtr!("    --clonedir  <dir>      Directory used to download and run PKGBUILDs");
@@ -44,7 +47,7 @@ pub fn help() {
     printtr!("    --gitflags  <flags>    Pass arguments to git");
     printtr!("    --sudo      <file>     sudo command to use");
     printtr!("    --sudoflags <flags>    Pass arguments to sudo");
-    printtr!("    --asp       <file>     asp command to use");
+    printtr!("    --pkgctl    <file>     pkgctl command to use");
     printtr!("    --bat       <file>     bat command to use");
     printtr!("    --batflags  <flags>    Pass arguments to bat");
     printtr!("    --gpg       <file>     gpg command to use");

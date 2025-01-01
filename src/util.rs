@@ -3,12 +3,16 @@ use crate::repo;
 
 use std::cell::Cell;
 use std::collections::HashMap;
+use std::fs::File;
 use std::io::{stdin, stdout, BufRead, Write};
 use std::ops::Range;
+use std::os::fd::{AsFd, AsRawFd};
 
 use alpm::{Package, PackageReason};
 use alpm_utils::{AsTarg, DbListExt, Targ};
 use anyhow::Result;
+use nix::libc::{STDERR_FILENO, STDIN_FILENO, STDOUT_FILENO};
+use nix::unistd::dup2;
 use tr::tr;
 
 #[derive(Debug)]
@@ -19,7 +23,7 @@ pub struct NumberMenu<'a> {
     pub ex_word: Vec<&'a str>,
 }
 
-pub fn pkg_base_or_name<'a>(pkg: &Package<'a>) -> &'a str {
+pub fn pkg_base_or_name(pkg: &Package) -> &str {
     pkg.base().unwrap_or_else(|| pkg.name())
 }
 
@@ -46,7 +50,7 @@ pub fn split_repo_aur_targets<'a, T: AsTarg>(
         } else if let Some(repo) = targ.repo {
             if config.alpm.syncdbs().iter().any(|db| db.name() == repo) {
                 local.push(targ);
-            } else if config.custom_repos.iter().any(|r| r.name == repo)
+            } else if config.pkgbuild_repos.repo(repo).is_some()
                 || repo == config.aur_namespace()
                 || repo == "."
             {
@@ -94,10 +98,10 @@ pub fn split_repo_aur_info<'a, T: AsTarg>(
         } else if !config.mode.aur() && !config.mode.pkgbuild() {
             local.push(targ);
         } else if let Some(repo) = targ.repo {
-            if repo == config.aur_namespace() || repo == "." {
-                aur.push(targ);
-            } else {
+            if config.alpm.syncdbs().iter().any(|db| db.name() == repo) {
                 local.push(targ);
+            } else {
+                aur.push(targ);
             }
         } else if dbs.pkg(targ.pkg).is_ok() {
             local.push(targ);
@@ -197,7 +201,7 @@ pub fn unneeded_pkgs(config: &Config, keep_make: bool, keep_optional: bool) -> V
     while again {
         again = false;
 
-        let mut check_deps = |deps: alpm::AlpmList<alpm::Dep>| {
+        let mut check_deps = |deps: alpm::AlpmList<&alpm::Dep>| {
             for dep in deps {
                 if let Some(deps) = providers.get(dep.name()) {
                     for dep in deps {
@@ -387,7 +391,7 @@ pub fn split_repo_aur_pkgs<S: AsRef<str> + Clone>(config: &Config, pkgs: &[S]) -
     (repo, aur)
 }
 
-pub fn repo_aur_pkgs(config: &Config) -> (Vec<alpm::Package<'_>>, Vec<alpm::Package<'_>>) {
+pub fn repo_aur_pkgs(config: &Config) -> (Vec<&alpm::Package>, Vec<&alpm::Package>) {
     if config.repos != LocalRepos::None {
         let (repo, aur) = repo::repo_aur_dbs(config);
         let repo = repo.iter().flat_map(|db| db.pkgs()).collect::<Vec<_>>();
@@ -402,4 +406,21 @@ pub fn repo_aur_pkgs(config: &Config) -> (Vec<alpm::Package<'_>>, Vec<alpm::Pack
             .partition(|pkg| config.alpm.syncdbs().pkg(pkg.name()).is_ok());
         (repo, aur)
     }
+}
+
+pub fn redirect_to_stderr() -> Result<File> {
+    let stdout = stdout().as_fd().try_clone_to_owned()?;
+    dup2(STDERR_FILENO, STDOUT_FILENO)?;
+    Ok(File::from(stdout))
+}
+
+pub fn reopen_stdin() -> Result<()> {
+    let file = File::open("/dev/tty")?;
+    dup2(file.as_raw_fd(), STDIN_FILENO)?;
+    Ok(())
+}
+
+pub fn reopen_stdout(file: &File) -> Result<()> {
+    dup2(file.as_raw_fd(), STDOUT_FILENO)?;
+    Ok(())
 }

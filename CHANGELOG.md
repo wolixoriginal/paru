@@ -1,5 +1,196 @@
 # Changelog
 
+## Paru v2.0.4 (2024-09-20)
+
+### Added
+
+- Add pacman 7 support 90656a9
+
+### Fixed
+
+- Fix split package support on -G c894e25
+- Fix -Fl fish completion #1213
+- Fix typo in man page #1237
+- Fix build when POSIXLY_CORRECT is set #1160
+
+### Localization
+
+- Add cs locale #1133
+- Updated pt locale #1164
+- Updated pt_BR locale #1175
+- Updated hu locale #1235
+
+## Paru v2.0.3 (2024-03-13)
+
+### Fixed
+
+- Fix build on arm c096bb
+
+## Paru v2.0.2 (2024-03-13)
+
+### Added
+
+- Add --chrootflags option #1090
+- Add zsh package completion for --getpkgbuild #1101
+
+### Fixed
+
+- Fix crash when pkgbuild repo has directories 057706b
+- Fix cache_dir instead of state_dir in error message #1141
+- Fix --needed #1100
+- Filter out pkgbuild repos for aur warnings 81efb1f
+- Fixed typos in man page #1091
+- Only enable color when stderr and stdout are tty b345771
+- Update testing repo names for -G #1147
+
+### Localization
+
+- Add hu locale #1116
+- Updated fr locale #1094
+- Update sv locale #1125
+- Update zh_CN locale #1120
+- Update es locale #1117
+- Update zh_TW locale #1111
+
+## Paru v2.0.1 (2023-12-01)
+
+### Added
+
+- Print which package failed to clean in -Sc #1074
+
+### Fixed
+
+- Fix local pkgbuild review bf35cab
+- Don't try interactive install with empty package list 26ce55f
+- Don't refresh when no Git pkgbuild repos e090af4
+- Fix compile on arm d1a9c4
+
+### Localization
+
+- Update sv locale #1088
+
+## Paru v2.0.0 (2023-11-26)
+
+Paru v2.0.0 comes after a long time of no releases, mostly due to a lack of free time
+and a lot of changes that needed a lot of work to get done.
+
+This update brings a lot of big changes, mostly aimed at power users, and a handul of general
+improvements and quality of life changes.
+
+As there's not been a release in so long, consider a lot of the things here not battle tested,
+with a .1 patch to follow.
+
+This changelog won't include minor changes as there are a lot.
+
+### PKGBUILD Repos
+
+The main feature of this release is properly integrating non aur pkgbuilds into the build
+engine. You can now add pkgbuild repos to your paru.conf in the form of:
+
+```
+[repo_name]
+Url = https://path/to/git/repo
+```
+
+Then syncing the repo with `paru -Sy --pkgbuilds`.
+
+You can also specify 'Path =' instead to point to a pkgbuild repo on disk.
+
+paru will then recognise this repo as a source of pkgbuilds just like the AUR.
+
+```
+paru -S foo
+```
+
+pkgbuild repos have a higher priority than the AUR so this can also be used to shadow AUR
+packages with your own pkgbuilds. The deps of these pkgbuilds can still include AUR deps.
+
+There is also an automatic pkgbuild repo named `.` in the current directory. Essentionally
+there's an invisible:
+
+```
+[.]
+Path = .
+```
+
+in your paru.conf.
+
+This allows doing `paru -S ./foo` where `foo` is the name of a package (not path) under the
+current directory. this means if you have a bunch of pkgbuilds in a directory that depend on
+each other you can build one with `paru -S ./foo` and paru will solve and build the dependencies
+across pkgbuilds.
+
+Previously `paru -U` could be used to build a pkgbuild in the current directory. This has been
+renamed to `paru -B <dirs>...` allowing you to specify multiple pkgbuilds to build at once.
+
+See `paru.conf(5)` for more information on this.
+
+### Chroot
+
+--chroot now works without local repos, though it still works better with them.
+
+### --interactive
+
+`paru foo` has always been there for interactive search and install. There is now `--interactive`
+which works for other operactions.
+
+- `paru foo` is an alias for `paru -S --interactive foo`
+- `paru -R --interactive foo` can be used for an interactive remove.
+- `paru -Ss/-Qs --interactive foo` will give an interactive prompt then print the chosen packages so they can be piped to other commands.
+
+### Provides
+
+Provide searching is now better and is now enabled in the default paru.conf. You probably
+want to uncomment this option if you have an existing paru.conf.
+
+### Contributors
+
+Thanks to every one who has contributed code and translations for paru.
+And thanks to every one who has decided to sponsor the project.
+
+### Added
+
+- Add --interactive
+- Add --nolocalrepo
+- Add --pacmanconfbin
+- Add --provides=all
+- Add --pkgbuilds and --mode
+- Add --rebuild=tree
+- Add -o to ignore optional deps with --clean
+- Add IgnoreDevelsource
+- Add IgnoreDevel
+- Add AurRpcUrl
+- Add pkgbuild repos
+- Add -S ./ syntax
+
+### Changed
+
+- Replace devel.json with devel.toml
+- Move devel.toml to $XDG_STATE_HOME
+- Dates now use the local time zone
+- Fallback to cat when less is not available
+- No confirm pacman install after final paru confirmation
+- Copy DB into chroot before update
+- Disable -w/--downloadonly when installing aur packages
+- Allow chroot without local repo
+- Replace -U with -B
+
+### Fixed
+
+- Pass env into chroot
+- Fix separate install of split packages
+- Create local repo when refreshing
+- Respect makepkg config outside of chroot
+- Fix no sudo when running paru -Sc
+- Fix --redownload=yes
+- Don't try set install reason if package didn't actually install
+- colour version when printing install
+- Fix assume install for chroot
+- Don't install makedeps when chroot
+- Fix -dd in chroot
+- Don't review when no packages
+- Fix aur packages not being case sensitive
+
 ## Paru v1.11.2 (2022-11-05)
 
 Rebuild for openssl 3

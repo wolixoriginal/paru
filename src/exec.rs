@@ -2,9 +2,9 @@ use crate::args::Args;
 use crate::config::Config;
 
 use std::ffi::OsStr;
-use std::fmt::{Display, Formatter};
+use std::fmt::{Debug, Display, Formatter};
 use std::path::Path;
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread;
@@ -12,12 +12,12 @@ use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use log::debug;
-use once_cell::sync::Lazy;
 use signal_hook::consts::signal::*;
 use signal_hook::flag as signal_flag;
+use std::sync::LazyLock;
 use tr::tr;
 
-pub static DEFAULT_SIGNALS: Lazy<Arc<AtomicBool>> = Lazy::new(|| {
+pub static DEFAULT_SIGNALS: LazyLock<Arc<AtomicBool>> = LazyLock::new(|| {
     let arc = Arc::new(AtomicBool::new(true));
     signal_flag::register_conditional_default(SIGTERM, Arc::clone(&arc)).unwrap();
     signal_flag::register_conditional_default(SIGINT, Arc::clone(&arc)).unwrap();
@@ -25,7 +25,7 @@ pub static DEFAULT_SIGNALS: Lazy<Arc<AtomicBool>> = Lazy::new(|| {
     arc
 });
 
-static CAUGHT_SIGNAL: Lazy<Arc<AtomicUsize>> = Lazy::new(|| {
+static CAUGHT_SIGNAL: LazyLock<Arc<AtomicUsize>> = LazyLock::new(|| {
     let arc = Arc::new(AtomicUsize::new(0));
     signal_flag::register_usize(SIGTERM, Arc::clone(&arc), SIGTERM as usize).unwrap();
     signal_flag::register_usize(SIGINT, Arc::clone(&arc), SIGINT as usize).unwrap();
@@ -33,24 +33,11 @@ static CAUGHT_SIGNAL: Lazy<Arc<AtomicUsize>> = Lazy::new(|| {
     arc
 });
 
-pub static RAISE_SIGPIPE: Lazy<Arc<AtomicBool>> = Lazy::new(|| {
+pub static RAISE_SIGPIPE: LazyLock<Arc<AtomicBool>> = LazyLock::new(|| {
     let arc = Arc::new(AtomicBool::new(true));
     signal_flag::register_conditional_default(SIGPIPE, Arc::clone(&arc)).unwrap();
     arc
 });
-
-#[derive(Debug, Clone)]
-pub struct PacmanError {
-    pub msg: String,
-}
-
-impl Display for PacmanError {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.msg)
-    }
-}
-
-impl std::error::Error for PacmanError {}
 
 #[derive(Debug, Clone, Copy)]
 pub struct Status(pub i32);
@@ -149,8 +136,8 @@ pub fn spawn_sudo(sudo: String, flags: Vec<String>) -> Result<()> {
 
 fn sudo_loop<S: AsRef<OsStr>>(sudo: &str, flags: &[S]) -> Result<()> {
     loop {
-        update_sudo(sudo, flags)?;
         thread::sleep(Duration::from_secs(250));
+        update_sudo(sudo, flags)?;
     }
 }
 
@@ -173,66 +160,84 @@ fn wait_for_lock(config: &Config) {
                 .paint(tr!("Pacman is currently in use, please wait..."))
         );
 
-        std::thread::sleep(Duration::from_secs(3));
         while path.exists() {
             std::thread::sleep(Duration::from_secs(3));
         }
     }
 }
 
-pub fn pacman<S: AsRef<str> + Display + std::fmt::Debug>(
-    config: &Config,
-    args: &Args<S>,
-) -> Result<Status> {
-    if config.need_root {
+fn new_pacman<S: AsRef<str> + Display + Debug>(config: &Config, args: &Args<S>) -> Command {
+    let mut cmd = if config.need_root {
         wait_for_lock(config);
         let mut cmd = Command::new(&config.sudo_bin);
-        cmd.args(&config.sudo_flags)
-            .arg(args.bin.as_ref())
-            .args(args.args());
-        command_status(&mut cmd)
+        cmd.args(&config.sudo_flags).arg(args.bin.as_ref());
+        cmd
     } else {
-        let mut cmd = Command::new(args.bin.as_ref());
-        cmd.args(args.args());
-        command_status(&mut cmd)
+        Command::new(args.bin.as_ref())
+    };
+
+    if let Some(config) = &config.pacman_conf {
+        cmd.args(["--config", config]);
     }
+    cmd.args(args.args());
+    cmd
+}
+
+pub fn pacman<S: AsRef<str> + Display + Debug>(config: &Config, args: &Args<S>) -> Result<Status> {
+    let mut cmd = new_pacman(config, args);
+    command_status(&mut cmd)
 }
 
 pub fn pacman_output<S: AsRef<str> + Display + std::fmt::Debug>(
     config: &Config,
     args: &Args<S>,
 ) -> Result<Output> {
-    use std::process::Stdio;
-
-    if config.need_root {
-        wait_for_lock(config);
-        let mut cmd = Command::new(&config.sudo_bin);
-        cmd.args(&config.sudo_flags)
-            .arg(args.bin.as_ref())
-            .args(args.args())
-            .stdin(Stdio::inherit());
-        command_output(&mut cmd)
-    } else {
-        let mut cmd = Command::new(args.bin.as_ref());
-        cmd.args(args.args()).stdin(Stdio::inherit());
-        command_output(&mut cmd)
-    }
+    let mut cmd = new_pacman(config, args);
+    cmd.stdin(Stdio::inherit());
+    command_output(&mut cmd)
 }
 
-pub fn makepkg<S: AsRef<OsStr>>(config: &Config, dir: &Path, args: &[S]) -> Result<Status> {
+fn new_makepkg<S: AsRef<OsStr>>(
+    config: &Config,
+    dir: &Path,
+    args: &[S],
+    pkgdest: Option<&str>,
+) -> Command {
     let mut cmd = Command::new(&config.makepkg_bin);
     if let Some(mconf) = &config.makepkg_conf {
         cmd.arg("--config").arg(mconf);
     }
+    if let Some(dest) = pkgdest {
+        cmd.env("PKGDEST", dest);
+    }
     cmd.args(&config.mflags).args(args).current_dir(dir);
+    cmd
+}
+
+pub fn makepkg_dest<S: AsRef<OsStr>>(
+    config: &Config,
+    dir: &Path,
+    args: &[S],
+    pkgdest: Option<&str>,
+) -> Result<Status> {
+    let mut cmd = new_makepkg(config, dir, args, pkgdest);
     command_status(&mut cmd)
 }
 
-pub fn makepkg_output<S: AsRef<OsStr>>(config: &Config, dir: &Path, args: &[S]) -> Result<Output> {
-    let mut cmd = Command::new(&config.makepkg_bin);
-    if let Some(mconf) = &config.makepkg_conf {
-        cmd.arg("--config").arg(mconf);
-    }
-    cmd.args(&config.mflags).args(args).current_dir(dir);
+pub fn makepkg<S: AsRef<OsStr>>(config: &Config, dir: &Path, args: &[S]) -> Result<Status> {
+    makepkg_dest(config, dir, args, None)
+}
+
+pub fn makepkg_output_dest<S: AsRef<OsStr>>(
+    config: &Config,
+    dir: &Path,
+    args: &[S],
+    pkgdest: Option<&str>,
+) -> Result<Output> {
+    let mut cmd = new_makepkg(config, dir, args, pkgdest);
     command_output(&mut cmd)
+}
+
+pub fn makepkg_output<S: AsRef<OsStr>>(config: &Config, dir: &Path, args: &[S]) -> Result<Output> {
+    makepkg_output_dest(config, dir, args, None)
 }

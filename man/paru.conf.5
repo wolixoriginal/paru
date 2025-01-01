@@ -248,7 +248,7 @@ Paru will act on packages in the enabled repos instead of foreign packages.
 The repo must already be declared in pacman.conf but does not have to already exist on disk.
 
 Optionally a list of repos to use can be passed. By default paru will consider all
-local repos, building new packages into the fist listed repo and upgrading the packages
+local repos, building new packages into the first listed repo and upgrading the packages
 in other enabled repos.
 
 .TP
@@ -357,6 +357,12 @@ where file manager is called by paru. Arguments are split on whitespace before
 being passed to file manager.
 
 .TP
+.B ChrootFlags = Flags...
+Passes arguments to makechrootpkg. These flags get passed to every instance
+where makechrootpkg is called by paru. Arguments are split on whitespace before
+being passed to makechrootpkg.
+
+.TP
 .B Pager = Command
 Command to use for paging
 
@@ -394,9 +400,13 @@ Paru will refresh PKGBUILD repositories when it refreshes repository databases.
 Refreshing just PKGBUILD repositories can be done with \fBparu -Sya\fR.
 
 .TP
-.B URL = https://path/to/repo
+.B Url = https://path/to/repo
 Git URL to the PKGBUILD repository. File paths may be used to point to git repos on
 disk.
+
+If \fBPath\fR is specified alongside \fBUrl\fR, the specified path will be treated as
+a subdirectory of the repository and paru will only search for pkgbuilds in that
+subdirectory.
 
 .TP
 .B Path = /path/to/repo
