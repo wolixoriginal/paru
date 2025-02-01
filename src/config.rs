@@ -3,28 +3,28 @@ use crate::devel::save_devel_info;
 use crate::exec::{self, Status};
 use crate::fmt::color_repo;
 use crate::info::get_terminal_width;
-use crate::util::get_provider;
+use crate::pkgbuild::PkgbuildRepos;
+use crate::util::{get_provider, reopen_stdin};
 use crate::{alpm_debug_enabled, help, printtr, repo};
 
 use std::env::consts::ARCH;
 use std::env::{remove_var, set_var, var};
 use std::fmt;
-use std::fs::{remove_file, File, OpenOptions};
-use std::io::{stdin, stdout, BufRead};
+use std::fs::{remove_file, OpenOptions};
+use std::io::{stderr, stdin, stdout, BufRead, IsTerminal};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use alpm::{
     AnyDownloadEvent, AnyQuestion, Depend, DownloadEvent, DownloadResult, LogLevel, Question,
 };
-use ansi_term::Color::{Blue, Cyan, Green, Purple, Red, Yellow};
-use ansi_term::Style;
+use ansiterm::Color::{Blue, Cyan, Green, Purple, Red, Yellow};
+use ansiterm::Style;
 use anyhow::{anyhow, bail, ensure, Context, Error, Result};
+
 use bitflags::bitflags;
 use cini::{Callback, CallbackKind, Ini};
 use globset::{Glob, GlobSet, GlobSetBuilder};
-use nix::unistd::{dup2, isatty};
-use std::os::unix::io::AsRawFd;
 use tr::tr;
 use url::Url;
 
@@ -77,13 +77,13 @@ pub struct Colors {
     pub warning: Style,
     pub bold: Style,
     pub upgrade: Style,
-    pub base: Style,
+    //pub base: Style,
     pub action: Style,
     pub sl_repo: Style,
     pub sl_pkg: Style,
     pub sl_version: Style,
     pub sl_installed: Style,
-    pub ss_repo: Style,
+    //pub ss_repo: Style,
     pub ss_name: Style,
     pub ss_ver: Style,
     pub ss_stats: Style,
@@ -104,7 +104,7 @@ pub struct Colors {
 impl From<&str> for Colors {
     fn from(s: &str) -> Self {
         match s {
-            "auto" if isatty(stdout().as_raw_fd()).unwrap_or(false) => Colors::new(),
+            "auto" if stdout().is_terminal() && stderr().is_terminal() => Colors::new(),
             "always" => Colors::new(),
             _ => Colors::default(),
         }
@@ -120,13 +120,13 @@ impl Colors {
             warning: Style::new().fg(Yellow),
             bold: Style::new().bold(),
             upgrade: Style::new().fg(Green).bold(),
-            base: Style::new().fg(Blue),
+            //base: Style::new().fg(Blue),
             action: Style::new().fg(Blue).bold(),
             sl_repo: Style::new().fg(Purple).bold(),
             sl_pkg: Style::new().bold(),
             sl_version: Style::new().fg(Green).bold(),
             sl_installed: Style::new().fg(Cyan).bold(),
-            ss_repo: Style::new().fg(Blue).bold(),
+            //ss_repo: Style::new().fg(Blue).bold(),
             ss_name: Style::new().bold(),
             ss_ver: Style::new().fg(Green).bold(),
             ss_stats: Style::new().bold(),
@@ -136,7 +136,7 @@ impl Colors {
             code: Style::new().fg(Cyan),
             news_date: Style::new().fg(Cyan).bold(),
             old_version: Style::new().fg(Red),
-            install_version: Style::new().fg(ansi_term::Color::Fixed(243)),
+            install_version: Style::new().fg(ansiterm::Color::Fixed(243)),
             new_version: Style::new().fg(Green),
             number_menu: Style::new().fg(Purple),
             group: Style::new().fg(Blue).bold(),
@@ -195,8 +195,10 @@ pub enum Sign {
     Key(String),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum Op {
+    #[default]
+    Default,
     ChrootCtl,
     Database,
     DepTest,
@@ -209,7 +211,6 @@ pub enum Op {
     Sync,
     Upgrade,
     Build,
-    Yay,
 }
 
 impl ConfigEnum for Op {
@@ -226,7 +227,7 @@ impl ConfigEnum for Op {
         ("sync", Self::Sync),
         ("upgrade", Self::Upgrade),
         ("build", Self::Build),
-        ("yay", Self::Yay),
+        ("default", Self::Default),
     ];
 }
 
@@ -387,7 +388,6 @@ pub struct Config {
 
     pub cols: Option<usize>,
 
-    #[default(Op::Yay)]
     pub op: Op,
 
     #[cfg(not(feature = "mock"))]
@@ -436,6 +436,7 @@ pub struct Config {
     #[default(Mode::empty())]
     pub mode: Mode,
     pub aur_filter: bool,
+    pub interactive: bool,
 
     #[default = 7]
     pub completion_interval: u64,
@@ -460,7 +461,7 @@ pub struct Config {
     pub complete: bool,
     pub print: bool,
     pub news_on_upgrade: bool,
-    pub comments: bool,
+    pub comments: usize,
     pub ssh: bool,
     pub keep_repo_cache: bool,
     pub fail_fast: bool,
@@ -482,8 +483,8 @@ pub struct Config {
     pub gpg_bin: String,
     #[default = "sudo"]
     pub sudo_bin: String,
-    #[default = "asp"]
-    pub asp_bin: String,
+    #[default = "pkgctl"]
+    pub pkgctl_bin: String,
     #[default = "bat"]
     pub bat_bin: String,
     pub fm: Option<String>,
@@ -495,6 +496,7 @@ pub struct Config {
     pub sudo_flags: Vec<String>,
     pub bat_flags: Vec<String>,
     pub fm_flags: Vec<String>,
+    pub chroot_flags: Vec<String>,
     pub pager_cmd: Option<String>,
 
     pub devel_suffixes: Vec<String>,
@@ -513,6 +515,7 @@ pub struct Config {
     #[default(Path::new("/var/lib/aurbuild/").join(ARCH))]
     pub chroot_dir: PathBuf,
     pub chroot: bool,
+    pub chroot_pkgs: Vec<String>,
     pub install: bool,
     pub uninstall: bool,
     pub sysupgrade: bool,
@@ -540,41 +543,8 @@ pub struct Config {
     pub ignore_devel_builder: GlobSetBuilder,
     pub assume_installed: Vec<String>,
 
-    pub custom_repos: Vec<CustomRepo>,
-}
-
-#[derive(Debug)]
-pub enum RepoSource {
-    Url(Url),
-    Path(PathBuf),
-    None,
-}
-
-impl Default for RepoSource {
-    fn default() -> Self {
-        Self::None
-    }
-}
-
-#[derive(Default, Debug)]
-pub struct CustomRepo {
-    pub name: String,
-    pub source: RepoSource,
-    pub depth: u32,
-    pub skip_review: bool,
-    pub force_srcinfo: bool,
-}
-
-impl CustomRepo {
-    pub fn new(name: String) -> Self {
-        CustomRepo {
-            depth: 2,
-            name,
-            source: RepoSource::None,
-            skip_review: false,
-            force_srcinfo: false,
-        }
-    }
+    #[default(PkgbuildRepos::new(aur_fetch::Fetch::with_cache_dir("repo")))]
+    pub pkgbuild_repos: PkgbuildRepos,
 }
 
 impl Ini for Config {
@@ -585,13 +555,13 @@ impl Ini for Config {
             CallbackKind::Section(section) => {
                 self.section = Some(section.to_string());
                 if !matches!(section, "options" | "bin" | "env")
-                    && !self.custom_repos.iter().any(|r| r.name == section)
+                    && self.pkgbuild_repos.repo(section).is_none()
                 {
                     if matches!(section, "local" | "aur" | "pkg" | "base") || section.contains('.')
                     {
                         bail!(tr!("section can not be called {}", section));
                     }
-                    self.custom_repos.push(CustomRepo::new(section.to_string()));
+                    self.pkgbuild_repos.add_repo(section.to_string());
                 }
                 Ok(())
             }
@@ -728,7 +698,7 @@ impl Config {
 
         if self.help {
             match self.op {
-                Op::GetPkgBuild | Op::Show | Op::Yay => {
+                Op::GetPkgBuild | Op::Show | Op::Default => {
                     help::help();
                     std::process::exit(0);
                 }
@@ -789,11 +759,29 @@ impl Config {
             git_flags: self.git_flags.clone(),
             clone_dir: self.build_dir.clone(),
             diff_dir: self.cache_dir.join("diff"),
+            aur_url: aur_url.clone(),
+        };
+
+        self.pkgbuild_repos.fetch = aur_fetch::Fetch {
+            git: self.git_bin.clone().into(),
+            git_flags: self.git_flags.clone(),
+            clone_dir: self.build_dir.join("repo"),
+            diff_dir: self.cache_dir.join("repo/diff"),
             aur_url,
         };
 
+        for repo in &mut self.pkgbuild_repos.repos {
+            if repo.source.url().is_some() {
+                repo.path = self.pkgbuild_repos.fetch.clone_dir.join(&repo.path);
+            }
+        }
+
         if self.mode == Mode::empty() {
             self.mode = Mode::all();
+        }
+
+        if !self.mode.pkgbuild() {
+            self.pkgbuild_repos.repos.clear();
         }
 
         self.need_root = self.need_root();
@@ -808,7 +796,7 @@ impl Config {
         }
 
         if self.repos != LocalRepos::None {
-            let repos = repo::repo_aur_dbs(self).1;
+            let (_, repos) = repo::repo_aur_dbs(self);
 
             if repos.is_empty() {
                 bail!(
@@ -818,7 +806,10 @@ impl Config {
 
     [aur]
     SigLevel = PackageOptional DatabaseOptional
-    Server = file:///var/lib/repo/aur"
+    Server = file:///var/lib/repo/aur
+
+then initialise it with:
+    paru -Ly"
                 );
             }
 
@@ -837,6 +828,9 @@ impl Config {
 
         if !self.assume_installed.is_empty() && !self.chroot {
             self.mflags.push("-d".to_string());
+        }
+        if self.no_check {
+            self.mflags.push("--nocheck".to_string());
         }
 
         if self.chroot {
@@ -974,15 +968,11 @@ impl Config {
     fn parse_repo(&mut self, repo: &str, key: &str, value: Option<&str>) -> Result<()> {
         let value = value.context(tr!("key can not be empty"));
 
-        let repo = self
-            .custom_repos
-            .iter_mut()
-            .find(|r| r.name == repo)
-            .unwrap();
+        let repo = self.pkgbuild_repos.repo_mut(repo).unwrap();
 
         match key {
-            "URL" => repo.source = RepoSource::Url(Url::parse(value?)?),
-            "Path" => repo.source = RepoSource::Path(PathBuf::from(value?.to_string())),
+            "Url" => repo.source.set_url(Url::parse(value?)?),
+            "Path" => repo.source.set_path(value?.to_string()),
             "Depth" => repo.depth = value?.parse()?,
             "SkipReview" => repo.skip_review = true,
             "GenerateSrcinfo" => repo.force_srcinfo = true,
@@ -1019,7 +1009,7 @@ impl Config {
             "Pacman" => self.pacman_bin = value,
             "PacmanConf" => self.pacman_conf_bin = Some(value),
             "Git" => self.git_bin = value,
-            "Asp" => self.asp_bin = value,
+            "Pkgctl" => self.pkgctl_bin = value,
             "Gpg" => self.gpg_bin = value,
             "Sudo" => self.sudo_bin = value,
             "Pager" => self.pager_cmd = Some(value),
@@ -1031,6 +1021,7 @@ impl Config {
             "SudoFlags" => self.sudo_flags.extend(split),
             "BatFlags" => self.bat_flags.extend(split),
             "FileManagerFlags" => self.fm_flags.extend(split),
+            "ChrootFlags" => self.chroot_flags.extend(split),
             "PreBuildCommand" => self.pre_build_command = Some(value),
             _ => eprintln!(
                 "{}",
@@ -1179,19 +1170,7 @@ pub fn version() {
     println!(" - libalpm v{}", alpm::version());
 }
 
-fn reopen_stdin() -> Result<()> {
-    let stdin_fd = 0;
-    let file = File::open("/dev/tty")?;
-
-    dup2(file.as_raw_fd(), stdin_fd)?;
-
-    Ok(())
-}
-
-fn question(question: AnyQuestion, data: &mut (bool, Colors)) {
-    let no_confirm = data.0;
-    let c = data.1;
-
+fn question(question: AnyQuestion, (no_confirm, c): &mut (bool, Colors)) {
     match question.question() {
         Question::SelectProvider(mut question) => {
             let providers = question.providers();
@@ -1221,7 +1200,7 @@ fn question(question: AnyQuestion, data: &mut (bool, Colors)) {
                 print!("{}) {}  ", n + 1, pkg.name());
             }
 
-            let index = get_provider(len, no_confirm);
+            let index = get_provider(len, *no_confirm);
             question.set_index(index as i32);
         }
         Question::InstallIgnorepkg(mut question) => {

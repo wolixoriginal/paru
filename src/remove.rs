@@ -1,5 +1,6 @@
 use crate::devel::{load_devel_info, save_devel_info};
 use crate::print_error;
+use crate::search::interactive_search_local;
 use crate::util::pkg_base_or_name;
 use crate::Config;
 use crate::{exec, repo};
@@ -8,14 +9,18 @@ use std::collections::HashMap;
 
 use anyhow::Result;
 
-pub fn remove(config: &Config) -> Result<i32> {
+pub fn remove(config: &mut Config) -> Result<i32> {
+    if config.interactive {
+        interactive_search_local(config)?;
+    }
+
     let mut devel_info = load_devel_info(config)?.unwrap_or_default();
     let db = config.alpm.localdb();
     let bases = config
         .targets
         .iter()
         .filter_map(|pkg| db.pkg(pkg.as_str()).ok())
-        .map(|pkg| pkg_base_or_name(&pkg))
+        .map(pkg_base_or_name)
         .collect::<Vec<_>>();
 
     let mut db_map: HashMap<String, Vec<String>> = HashMap::new();

@@ -179,13 +179,14 @@ impl Config {
             Arg::Long("git") => self.git_bin = value?.to_string(),
             Arg::Long("gpg") => self.gpg_bin = value?.to_string(),
             Arg::Long("sudo") => self.sudo_bin = value?.to_string(),
-            Arg::Long("asp") => self.asp_bin = value?.to_string(),
+            Arg::Long("pkgctl") => self.pkgctl_bin = value?.to_string(),
             Arg::Long("bat") => self.bat_bin = value?.to_string(),
             Arg::Long("fm") => self.fm = Some(value?.to_string()),
             Arg::Long("pager") => self.pager_cmd = Some(value?.to_string()),
             Arg::Long("config") => self.pacman_conf = Some(value?.to_string()),
 
             Arg::Long("builddir") | Arg::Long("clonedir") => self.build_dir = value?.into(),
+            Arg::Long("develfile") => self.devel_path = value?.into(),
             Arg::Long("makepkgconf") => self.makepkg_conf = Some(value?.to_string()),
             Arg::Long("mflags") => self.mflags.extend(split_whitespace(value?)),
             Arg::Long("gitflags") => self.git_flags.extend(split_whitespace(value?)),
@@ -193,6 +194,10 @@ impl Config {
             Arg::Long("sudoflags") => self.sudo_flags.extend(split_whitespace(value?)),
             Arg::Long("batflags") => self.bat_flags.extend(split_whitespace(value?)),
             Arg::Long("fmflags") => self.fm_flags.extend(split_whitespace(value?)),
+            Arg::Long("chrootflags") => self.chroot_flags.extend(split_whitespace(value?)),
+            Arg::Long("chrootpkgs") => self
+                .chroot_pkgs
+                .extend(value?.split(',').map(|s| s.to_string())),
 
             Arg::Long("develsuffixes") => self.devel_suffixes = split_whitespace(value?),
             Arg::Long("installdebug") => self.install_debug = true,
@@ -246,6 +251,7 @@ impl Config {
                     self.mode |= word.parse()?;
                 }
             }
+            Arg::Long("interactive") => self.interactive = true,
             Arg::Long("skipreview") => self.skip_review = true,
             Arg::Long("review") => self.skip_review = false,
             Arg::Long("gendb") => self.gendb = true,
@@ -280,7 +286,7 @@ impl Config {
             Arg::Short('c') => {
                 self.complete = true;
                 self.clean += 1;
-                self.comments = true;
+                self.comments += 1;
             }
             Arg::Long("install") | Arg::Short('i') => self.install = true,
             Arg::Long("sysupgrade") | Arg::Short('u') => self.sysupgrade = true,
@@ -293,7 +299,7 @@ impl Config {
             Arg::Long("print") | Arg::Short('p') => self.print = true,
             Arg::Long("newsonupgrade") => self.news_on_upgrade = true,
             Arg::Long("nonewsonupgrade") => self.news_on_upgrade = false,
-            Arg::Long("comments") => self.comments = true,
+            Arg::Long("comments") => self.comments += 1,
             Arg::Long("ssh") => self.ssh = true,
             Arg::Long("failfast") => self.fail_fast = true,
             Arg::Long("nofailfast") => self.fail_fast = false,
@@ -393,7 +399,7 @@ fn takes_value(arg: Arg) -> TakesValue {
         Arg::Long("git") => TakesValue::Required,
         Arg::Long("gpg") => TakesValue::Required,
         Arg::Long("sudo") => TakesValue::Required,
-        Arg::Long("asp") => TakesValue::Required,
+        Arg::Long("pkgctl") => TakesValue::Required,
         Arg::Long("fm") => TakesValue::Required,
         Arg::Long("bat") => TakesValue::Required,
         Arg::Long("makepkgconf") => TakesValue::Required,
@@ -404,6 +410,8 @@ fn takes_value(arg: Arg) -> TakesValue {
         Arg::Long("sudoflags") => TakesValue::Required,
         Arg::Long("batflags") => TakesValue::Required,
         Arg::Long("fmflags") => TakesValue::Required,
+        Arg::Long("chrootflags") => TakesValue::Required,
+        Arg::Long("chrootpkgs") => TakesValue::Required,
         Arg::Long("completioninterval") => TakesValue::Required,
         Arg::Long("sortby") => TakesValue::Required,
         Arg::Long("searchby") => TakesValue::Required,
@@ -418,6 +426,7 @@ fn takes_value(arg: Arg) -> TakesValue {
         Arg::Long("builddir") => TakesValue::Required,
         Arg::Long("provides") => TakesValue::Optional,
         Arg::Long("clonedir") => TakesValue::Required,
+        Arg::Long("develfile") => TakesValue::Required,
         //pacman
         Arg::Long("dbpath") | Arg::Short('b') => TakesValue::Required,
         Arg::Long("root") | Arg::Short('r') => TakesValue::Required,

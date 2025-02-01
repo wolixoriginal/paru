@@ -1,6 +1,7 @@
 use crate::config::Config;
 use crate::exec;
-use anyhow::Result;
+use anyhow::{Context, Result};
+use nix::unistd::{Uid, User};
 use std::ffi::OsStr;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -15,6 +16,7 @@ pub struct Chroot {
     pub mflags: Vec<String>,
     pub ro: Vec<String>,
     pub rw: Vec<String>,
+    pub extra_pkgs: Vec<String>,
 }
 
 fn pacman_conf(pacman_conf: &str) -> Result<tempfile::NamedTempFile> {
@@ -60,7 +62,21 @@ impl Chroot {
     }
 
     pub fn run<S: AsRef<OsStr>>(&self, args: &[S]) -> Result<()> {
-        let dir = self.path.join("root");
+        self.run_as(true, args)
+    }
+    pub fn run_usr<S: AsRef<OsStr>>(&self, args: &[S]) -> Result<()> {
+        self.run_as(false, args)
+    }
+
+    fn run_as<S: AsRef<OsStr>>(&self, root: bool, args: &[S]) -> Result<()> {
+        let dir = if root {
+            self.path.join("root")
+        } else {
+            let user = User::from_uid(Uid::current())
+                .context("failed to get username")?
+                .context("failed to get username")?;
+            self.path.join(&user.name)
+        };
         let tmp = pacman_conf(&self.pacman_conf)?;
 
         let mut cmd = Command::new(&self.sudo);
@@ -70,6 +86,11 @@ impl Chroot {
             .arg("-M")
             .arg(&self.makepkg_conf)
             .arg(dir);
+
+        if Path::new(&format!("{}.d", self.makepkg_conf)).exists() {
+            cmd.arg("--bind-ro");
+            cmd.arg(format!("{}.d:/etc/makepkg.conf.d", self.makepkg_conf));
+        }
 
         for file in &self.ro {
             cmd.arg("--bind-ro");
@@ -101,11 +122,11 @@ impl Chroot {
         self.run(&["pacman", "-Syu", "--noconfirm"])
     }
 
-    pub fn build(
+    pub fn build<S: AsRef<OsStr>>(
         &self,
         pkgbuild: &Path,
         pkgs: &[&str],
-        chroot_flags: &[&str],
+        chroot_flags: &[S],
         flags: &[&str],
         env: &[(String, String)],
     ) -> Result<()> {
@@ -131,7 +152,11 @@ impl Chroot {
         cmd.arg("--").args(flags).args(&self.mflags);
 
         for (key, value) in env {
-            cmd.arg(format!("{}={}", key, value));
+            if key == "PKGDEST" {
+                cmd.env(key, value);
+            } else {
+                cmd.arg(format!("{}={}", key, value));
+            }
         }
 
         exec::command(&mut cmd)?;

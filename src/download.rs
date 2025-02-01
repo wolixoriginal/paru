@@ -3,20 +3,18 @@ use crate::fmt::print_indent;
 use crate::printtr;
 use crate::RaurHandle;
 
-use std::collections::{HashMap, HashSet};
-use std::fs::read_dir;
+use std::collections::HashMap;
 use std::io::Write;
 use std::iter::FromIterator;
-use std::path::Path;
 use std::process::{Command, Stdio};
 use std::result::Result as StdResult;
 
 use alpm::Version;
 use alpm_utils::{AsTarg, DbListExt, Targ};
-use ansi_term::Style;
+use ansiterm::Style;
 use anyhow::{bail, ensure, Context, Result};
 use aur_depends::AurBase;
-use aur_fetch::Repo;
+
 use globset::GlobSet;
 use indicatif::{ProgressBar, ProgressStyle};
 use raur::{ArcPackage as Package, Raur};
@@ -140,21 +138,22 @@ pub async fn cache_info_with_warnings<'a, S: AsRef<str> + Send + Sync>(
     let mut missing = Vec::new();
     let mut ood = Vec::new();
     let mut orphaned = Vec::new();
-    let mut aur_pkgs = raur.cache_info(cache, pkgs).await?;
 
+    let mut aur_pkgs = raur.cache_info(cache, pkgs).await?;
     aur_pkgs.retain(|pkg1| pkgs.iter().any(|pkg2| pkg1.name == pkg2.as_ref()));
 
+    let should_warn =
+        |pkg: &str| !no_warn.is_match(pkg) && !ignore.iter().any(|ignored| ignored == pkg);
+
     for pkg in pkgs {
-        if !no_warn.is_match(pkg.as_ref())
-            && !ignore.iter().any(|p| p == pkg.as_ref())
-            && !cache.contains(pkg.as_ref())
-        {
-            missing.push(pkg.as_ref())
+        let pkg_name = pkg.as_ref();
+        if should_warn(pkg_name) && !cache.contains(pkg_name) {
+            missing.push(pkg_name);
         }
     }
 
     for pkg in &aur_pkgs {
-        if no_warn.is_match(&pkg.name) && !ignore.iter().any(|p| p.as_str() == pkg.name) {
+        if should_warn(&pkg.name) {
             if pkg.out_of_date.is_some() {
                 ood.push(cache.get(pkg.name.as_str()).unwrap().name.as_str());
             }
@@ -165,14 +164,14 @@ pub async fn cache_info_with_warnings<'a, S: AsRef<str> + Send + Sync>(
         }
     }
 
-    let ret = Warnings {
+    let warnings = Warnings {
         pkgs: aur_pkgs,
         missing,
         ood,
         orphans: orphaned,
     };
 
-    Ok(ret)
+    Ok(warnings)
 }
 
 pub async fn getpkgbuilds(config: &mut Config) -> Result<i32> {
@@ -223,63 +222,24 @@ pub async fn getpkgbuilds(config: &mut Config) -> Result<i32> {
 }
 
 fn repo_pkgbuilds(config: &Config, pkgs: &[Targ<'_>]) -> Result<i32> {
-    let c = config.color;
-    let mut r = 0;
-
-    let cd = std::env::current_dir().context(tr!("could not get current directory"))?;
-    let asp = &config.asp_bin;
-
-    if Command::new(asp).output().is_err() {
-        bail!(tr!("can not get repo packages: asp is not installed"));
-    }
-
-    let cd = read_dir(cd)?
-        .map(|d| d.map(|d| d.file_name().into_string().unwrap()))
-        .collect::<Result<HashSet<_>, _>>()?;
+    let pkgctl = &config.pkgctl_bin;
 
     for (n, targ) in pkgs.iter().enumerate() {
-        print_download(config, n + 1, pkgs.len(), targ.pkg);
+        let Ok(pkg) = config.alpm.syncdbs().find_target(*targ) else {
+            continue;
+        };
+        let base = pkg.base().unwrap_or_else(|| pkg.name());
 
-        let ret = Command::new(asp)
-            .arg("update")
-            .arg(targ.pkg)
+        print_download(config, n + 1, pkgs.len(), base);
+
+        let ret = Command::new(pkgctl)
+            .arg("repo")
+            .arg("clone")
+            .arg("--protocol")
+            .arg("https")
+            .arg(base)
             .output()
-            .with_context(|| format!("{} {} update {}", tr!("failed to run:"), asp, targ.pkg))?;
-
-        ensure!(
-            ret.status.success(),
-            "{}",
-            String::from_utf8_lossy(&ret.stderr).trim()
-        );
-
-        let pkg = targ.pkg;
-
-        if cd.contains(pkg) {
-            if !Path::new(pkg).join("PKGBUILD").exists() {
-                println!(
-                    "{} {} {}",
-                    c.warning.paint("::"),
-                    tr!("does not contain PKGBUILD: skipping"),
-                    pkg
-                );
-                r = 1;
-                continue;
-            }
-            std::fs::remove_dir_all(pkg)?;
-        }
-
-        let ret = Command::new(asp)
-            .arg("export")
-            .arg(targ.to_string())
-            .output()
-            .with_context(|| {
-                format!(
-                    "{} {} export {}",
-                    tr!("failed to run:"),
-                    asp,
-                    targ.to_string()
-                )
-            })?;
+            .with_context(|| format!("{} {} export {}", tr!("failed to run:"), pkgctl, base))?;
 
         ensure!(
             ret.status.success(),
@@ -288,7 +248,7 @@ fn repo_pkgbuilds(config: &Config, pkgs: &[Targ<'_>]) -> Result<i32> {
         );
     }
 
-    Ok(r)
+    Ok(0)
 }
 
 pub fn print_download(_config: &Config, n: usize, total: usize, pkg: &str) {
@@ -360,50 +320,7 @@ async fn aur_pkgbuilds(config: &Config, bases: &Bases) -> Result<()> {
         })?;
 
         pb.finish();
-    }
-
-    Ok(())
-}
-
-pub fn custom_pkgbuilds(config: &Config, fetch: &aur_fetch::Fetch, repos: &[Repo]) -> Result<()> {
-    if repos.is_empty() {
-        return Ok(());
-    }
-
-    let cols = config.cols.unwrap_or(0);
-
-    let action = config.color.action;
-    let bold = config.color.bold;
-
-    println!(
-        "\n{} {}",
-        action.paint("::"),
-        bold.paint(tr!("Downloading PKGBUILD Repos..."))
-    );
-
-    if cols < 80 {
-        fetch.download_repos_cb(repos, |cb| {
-            print_download(config, cb.n, repos.len(), cb.pkg);
-        })?;
-    } else {
-        let total = repos.len().to_string();
-        let template = format!(
-            " ({{pos:>{}}}/{{len}}) {{prefix:45!}} [{{wide_bar}}]",
-            total.len()
-        );
-        let pb = ProgressBar::new(repos.len() as u64);
-        pb.set_style(
-            ProgressStyle::default_bar()
-                .template(&template)?
-                .progress_chars("-> "),
-        );
-
-        fetch.download_repos_cb(repos, |cb| {
-            pb.inc(1);
-            pb.set_prefix(cb.pkg.to_string());
-        })?;
-
-        pb.finish();
+        println!();
     }
 
     Ok(())
@@ -471,9 +388,13 @@ pub async fn show_comments(config: &mut Config) -> Result<i32> {
     let c = config.color;
 
     for base in &bases.bases {
-        let url = config
+        let mut url = config
             .aur_url
             .join(&format!("packages/{}", base.package_base()))?;
+
+        if config.comments >= 2 {
+            url.set_query(Some("PP=250"));
+        }
 
         let response = client
             .get(url.clone())
@@ -544,7 +465,15 @@ fn split_repo_aur_pkgbuilds<'a, T: AsTarg>(
         } else if let Some(repo) = targ.repo {
             if matches!(
                 repo,
-                "testing" | "community-testing" | "core" | "extra" | "community" | "multilib"
+                "testing"
+                    | "community-testing"
+                    | "core"
+                    | "extra"
+                    | "community"
+                    | "multilib"
+                    | "core-testing"
+                    | "extra-testing"
+                    | "multilib-testing"
             ) {
                 local.push(targ);
             } else {
@@ -553,7 +482,15 @@ fn split_repo_aur_pkgbuilds<'a, T: AsTarg>(
         } else if let Ok(pkg) = db.pkg(targ.pkg) {
             if matches!(
                 pkg.db().unwrap().name(),
-                "testing" | "community-testing" | "core" | "extra" | "community" | "multilib"
+                "testing"
+                    | "community-testing"
+                    | "core"
+                    | "extra"
+                    | "community"
+                    | "multilib"
+                    | "core-testing"
+                    | "extra-testing"
+                    | "multilib-testing"
             ) {
                 local.push(targ);
             } else {
@@ -571,65 +508,42 @@ pub async fn show_pkgbuilds(config: &mut Config) -> Result<i32> {
     let stdout = std::io::stdout();
     let mut stdout = stdout.lock();
     let bat = config.color.enabled && Command::new(&config.bat_bin).arg("-V").output().is_ok();
+    let client = config.raur.client();
 
     let (repo, aur) = split_repo_aur_pkgbuilds(config, &config.targets);
 
     if !repo.is_empty() {
-        let asp = &config.asp_bin;
+        for pkg in &repo {
+            let Ok(pkg) = config.alpm.syncdbs().find_target(*pkg) else {
+                continue;
+            };
+            let pkg = pkg.base().unwrap_or_else(|| pkg.name());
 
-        if Command::new(asp).output().is_err() {
-            eprintln!(
-                "{}",
-                tr!("{} is not installed: can not get repo packages", asp)
-            );
-            return Ok(1);
-        }
+            let url = Url::parse(&format!(
+                "https://gitlab.archlinux.org/archlinux/packaging/packages/{}/-/raw/HEAD/PKGBUILD",
+                pkg
+            ))?;
 
-        for pkg in repo {
-            let ret = Command::new(asp)
-                .arg("update")
-                .arg(pkg.pkg)
-                .output()
-                .with_context(|| format!("{} {} update {}", tr!("failed to run:"), asp, pkg))?;
-
-            ensure!(
-                ret.status.success(),
-                "{}",
-                String::from_utf8_lossy(&ret.stderr).trim()
-            );
+            let response = client
+                .get(url.clone())
+                .send()
+                .await
+                .with_context(|| format!("{}: {}", pkg, url))?;
+            if !response.status().is_success() {
+                bail!("{}: {}: {}", pkg, url, response.status());
+            }
 
             if bat {
-                let output = Command::new(asp)
-                    .arg("show")
-                    .arg(pkg.pkg)
-                    .output()
-                    .with_context(|| format!("{} {} show {}", tr!("failed to run:"), asp, pkg))?;
-
-                ensure!(
-                    output.status.success(),
-                    "{}",
-                    String::from_utf8_lossy(&output.stderr).trim()
-                );
-
-                pipe_bat(config, &output.stdout)?;
+                pipe_bat(config, &response.bytes().await?)?;
             } else {
-                let ret = Command::new(asp)
-                    .arg("show")
-                    .arg(pkg.pkg)
-                    .status()
-                    .with_context(|| format!("{} {} show {}", tr!("failed to run:"), asp, pkg))?;
-
-                ensure!(
-                    ret.success(),
-                    tr!("asp returned {}", ret.code().unwrap_or(1))
-                );
+                let _ = stdout.write_all(&response.bytes().await?);
             }
+
             let _ = stdout.write_all(b"\n");
         }
     }
 
     if !aur.is_empty() {
-        let client = config.raur.client();
         let aur = aur.iter().map(|t| t.pkg).collect::<Vec<_>>();
 
         let warnings = cache_info_with_warnings(

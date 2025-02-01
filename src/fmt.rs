@@ -1,5 +1,6 @@
-use std::collections::HashSet;
 use std::fmt::Write;
+
+use std::collections::HashSet;
 
 use crate::config::Config;
 use crate::repo;
@@ -7,7 +8,7 @@ use crate::repo;
 use alpm::Ver;
 use aur_depends::{Actions, Base};
 
-use ansi_term::Style;
+use ansiterm::Style;
 use chrono::{Local, TimeZone, Utc};
 use tr::tr;
 use unicode_width::UnicodeWidthStr;
@@ -106,7 +107,7 @@ pub fn print_indent<S: AsRef<str>>(
     println!();
 }
 
-use ansi_term::Color;
+use ansiterm::Color;
 
 pub fn color_repo(enabled: bool, name: &str) -> String {
     if !enabled {
@@ -122,6 +123,14 @@ pub fn color_repo(enabled: bool, name: &str) -> String {
     col = (col % 6) + 9;
     let col = Style::from(Color::Fixed(col as u8)).bold();
     col.paint(name).to_string()
+}
+
+pub fn print_target(targ: &str, quiet: bool) {
+    if quiet {
+        println!("{}", targ.split_once('/').unwrap().1);
+    } else {
+        println!("{}", targ);
+    }
 }
 
 fn base_string(config: &Config, base: &Base, devel: &HashSet<String>) -> String {
@@ -141,7 +150,7 @@ fn base_string(config: &Config, base: &Base, devel: &HashSet<String>) -> String 
     }
 
     if !Base::base_is_pkg(base.package_base(), base.packages()) {
-        write!(&mut s, "(").unwrap();
+        write!(&mut s, " (").unwrap();
         let mut pkgs = base.packages();
         write!(&mut s, "{}", pkgs.next().unwrap()).unwrap();
         for pkg in pkgs {
@@ -187,7 +196,7 @@ fn to_install(config: &Config, actions: &Actions, devel: &HashSet<String>) -> To
     for base in &mut build {
         match base {
             Base::Aur(base) => base.pkgs.retain(|p| !p.make),
-            Base::Custom(base) => base.pkgs.retain(|p| !p.make),
+            Base::Pkgbuild(base) => base.pkgs.retain(|p| !p.make),
         }
     }
     build.retain(|b| b.package_count() != 0);
@@ -200,7 +209,7 @@ fn to_install(config: &Config, actions: &Actions, devel: &HashSet<String>) -> To
     for base in &mut make_build {
         match base {
             Base::Aur(base) => base.pkgs.retain(|p| p.make),
-            Base::Custom(base) => base.pkgs.retain(|p| p.make),
+            Base::Pkgbuild(base) => base.pkgs.retain(|p| p.make),
         }
     }
     make_build.retain(|b| b.package_count() != 0);
@@ -239,7 +248,7 @@ pub fn print_install(config: &Config, actions: &Actions, devel: &HashSet<String>
     }
 
     if !to.aur.is_empty() {
-        let aur = if actions.iter_custom_pkgs().next().is_some() {
+        let aur = if actions.iter_pkgbuilds().next().is_some() {
             "Pkgbuilds"
         } else {
             "Aur"
@@ -251,7 +260,7 @@ pub fn print_install(config: &Config, actions: &Actions, devel: &HashSet<String>
     }
 
     if !to.make_aur.is_empty() {
-        let aur = if actions.iter_custom_pkgs().next().is_some() {
+        let aur = if actions.iter_pkgbuilds().next().is_some() {
             tr!("Pkgbuilds Make")
         } else {
             tr!("Aur Make")
@@ -302,10 +311,10 @@ pub fn print_install_verbose(config: &Config, actions: &Actions, devel: &HashSet
     let package = tr!("Repo ({})", actions.install.len());
     let aur = match (
         actions.iter_aur_pkgs().count(),
-        actions.iter_custom_pkgs().count(),
+        actions.iter_pkgbuilds().count(),
     ) {
-        (a, 0) => tr!("Aur ({})", a),
-        (a, c) => tr!("Pkgbuilds ({})", a + c),
+        (a, 0) => format!("Aur ({})", a),
+        (a, c) => format!("Pkgbuilds ({})", a + c),
     };
     let old = tr!("Old Version");
     let new = tr!("New Version");
@@ -350,7 +359,7 @@ pub fn print_install_verbose(config: &Config, actions: &Actions, devel: &HashSet
                 .iter()
                 .map(|pkg| repo(config, &pkg.pkg.name).len() + 1 + pkg.pkg.name.len())
                 .max(),
-            Base::Custom(base) => base
+            Base::Pkgbuild(base) => base
                 .pkgs
                 .iter()
                 .map(|pkg| base.repo.len() + 1 + pkg.pkg.pkgname.len())
@@ -370,7 +379,7 @@ pub fn print_install_verbose(config: &Config, actions: &Actions, devel: &HashSet
                 .filter_map(|pkg| old_ver(config, &pkg.pkg.name))
                 .map(|v| v.as_str())
                 .max(),
-            Base::Custom(base) => base
+            Base::Pkgbuild(base) => base
                 .pkgs
                 .iter()
                 .filter_map(|pkg| old_ver(config, &pkg.pkg.pkgname))
@@ -482,7 +491,7 @@ pub fn print_install_verbose(config: &Config, actions: &Actions, devel: &HashSet
                         );
                     }
                 }
-                Base::Custom(base) => {
+                Base::Pkgbuild(base) => {
                     for pkg in &base.pkgs {
                         let ver = base.srcinfo.version();
                         let ver = if devel.contains(&pkg.pkg.pkgname) {
